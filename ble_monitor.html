@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>AHT10 Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 16px 20px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #21262d;
+  }
+
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
+
+  #status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #30363d;
+    transition: background 0.3s;
+    flex-shrink: 0;
+  }
+  #status-dot.connected  { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
+  #status-dot.connecting { background: #d29922; box-shadow: 0 0 6px #d29922; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 16px 16px 8px;
+  }
+
+  .card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+
+  .card-label {
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 1px; text-transform: uppercase;
+    color: #8b949e; margin-bottom: 4px;
+  }
+
+  .card-value {
+    font-size: 36px; font-weight: 700;
+    line-height: 1; font-variant-numeric: tabular-nums;
+  }
+
+  .card-unit { font-size: 16px; font-weight: 400; color: #8b949e; margin-left: 2px; }
+
+  .temp .card-value { color: #ff7b72; }
+  .hum  .card-value { color: #58a6ff; }
+
+  .chart-wrap { flex: 1; padding: 8px 16px 16px; min-height: 0; }
+
+  .chart-box {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 12px;
+    height: 100%;
+    min-height: 220px;
+  }
+
+  #btn-connect {
+    display: block;
+    margin: 0 16px 16px;
+    padding: 14px;
+    background: #238636;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 16px; font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: calc(100% - 32px);
+  }
+  #btn-connect:hover    { background: #2ea043; }
+  #btn-connect:disabled { background: #21262d; color: #8b949e; cursor: default; }
+
+  #status-text {
+    text-align: center; font-size: 12px;
+    color: #8b949e; margin-bottom: 8px; min-height: 16px;
+  }
+
+  .no-ble {
+    margin: 20px 16px; padding: 14px;
+    background: #3d1f00; border: 1px solid #9e6a03;
+    border-radius: 10px; font-size: 13px; color: #e3b341; display: none;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AHT10 Monitor</h1>
+  <div id="status-dot"></div>
+</header>
+
+<div class="cards">
+  <div class="card temp">
+    <div class="card-label">Temperature</div>
+    <div class="card-value" id="val-temp">--<span class="card-unit">°C</span></div>
+  </div>
+  <div class="card hum">
+    <div class="card-label">Humidity</div>
+    <div class="card-value" id="val-hum">--<span class="card-unit">%</span></div>
+  </div>
+</div>
+
+<div class="chart-wrap">
+  <div class="chart-box">
+    <canvas id="chart"></canvas>
+  </div>
+</div>
+
+<div id="status-text">Press Connect to start</div>
+<div class="no-ble" id="no-ble">
+  ⚠️ Web Bluetooth not supported.<br>
+  Use <strong>Chrome</strong> on Android.<br>
+  On iOS use <strong>Bluefy</strong> app.
+</div>
+<button id="btn-connect">Connect via Bluetooth</button>
+
+<script>
+const SERVICE_UUID   = '12345678-1234-1234-1234-123456789abc';
+const CHAR_TEMP_UUID = '12345678-1234-1234-1234-123456789ab1';
+const CHAR_HUM_UUID  = '12345678-1234-1234-1234-123456789ab2';
+
+const MAX_POINTS = 60;
+
+let labels = [], tempData = [], humData = [];
+
+const ctx = document.getElementById('chart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [
+      {
+        label: 'Temp °C', data: tempData,
+        borderColor: '#ff7b72', backgroundColor: 'rgba(255,123,114,0.08)',
+        borderWidth: 2, pointRadius: 0, tension: 0.3,
+        yAxisID: 'yTemp', fill: true,
+      },
+      {
+        label: 'Humidity %', data: humData,
+        borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.08)',
+        borderWidth: 2, pointRadius: 0, tension: 0.3,
+        yAxisID: 'yHum', fill: true,
+      }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    animation: { duration: 300 },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#8b949e', boxWidth: 12, font: { size: 12 } } },
+      tooltip: {
+        backgroundColor: '#161b22', borderColor: '#30363d', borderWidth: 1,
+        titleColor: '#e6edf3', bodyColor: '#8b949e',
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#8b949e', maxTicksLimit: 6, font: { size: 11 } },
+        grid: { color: '#21262d' },
+      },
+      yTemp: {
+        position: 'left',
+        ticks: { color: '#ff7b72', font: { size: 11 } },
+        grid: { color: '#21262d' },
+        title: { display: true, text: '°C', color: '#ff7b72', font: { size: 11 } }
+      },
+      yHum: {
+        position: 'right',
+        ticks: { color: '#58a6ff', font: { size: 11 } },
+        grid: { drawOnChartArea: false },
+        title: { display: true, text: '%', color: '#58a6ff', font: { size: 11 } },
+        min: 0, max: 100,
+      }
+    }
+  }
+});
+
+function setStatus(text, dotClass) {
+  document.getElementById('status-text').textContent = text;
+  document.getElementById('status-dot').className = dotClass || '';
+}
+
+function pushData(temp, hum) {
+  const time = new Date().toLocaleTimeString('en', { hour12: false });
+  labels.push(time); tempData.push(temp); humData.push(hum);
+  if (labels.length > MAX_POINTS) { labels.shift(); tempData.shift(); humData.shift(); }
+  chart.update();
+  document.getElementById('val-temp').innerHTML = temp.toFixed(1) + '<span class="card-unit">°C</span>';
+  document.getElementById('val-hum').innerHTML  = hum.toFixed(1)  + '<span class="card-unit">%</span>';
+}
+
+function onTempNotify(e) {
+  const val = parseFloat(new TextDecoder().decode(e.target.value));
+  if (!isNaN(val)) window._lastTemp = val;
+}
+
+function onHumNotify(e) {
+  const val = parseFloat(new TextDecoder().decode(e.target.value));
+  if (!isNaN(val) && window._lastTemp !== undefined) pushData(window._lastTemp, val);
+}
+
+document.getElementById('btn-connect').addEventListener('click', async () => {
+  if (!navigator.bluetooth) {
+    document.getElementById('no-ble').style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('btn-connect');
+  btn.disabled = true;
+  setStatus('Scanning... select ESP32-AHT10 from the list', 'connecting');
+
+  try {
+    // acceptAllDevices — показываем ВСЕ BLE устройства рядом
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [SERVICE_UUID]
+    });
+
+    device.addEventListener('gattserverdisconnected', () => {
+      setStatus('Disconnected', '');
+      btn.textContent = 'Connect via Bluetooth';
+      btn.disabled = false;
+    });
+
+    setStatus('Connecting to ' + device.name + '...', 'connecting');
+    const server  = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    const tempChar = await service.getCharacteristic(CHAR_TEMP_UUID);
+    const humChar  = await service.getCharacteristic(CHAR_HUM_UUID);
+
+    await tempChar.startNotifications();
+    tempChar.addEventListener('characteristicvaluechanged', onTempNotify);
+
+    await humChar.startNotifications();
+    humChar.addEventListener('characteristicvaluechanged', onHumNotify);
+
+    setStatus('Connected: ' + device.name, 'connected');
+    btn.textContent = 'Disconnect';
+    btn.disabled = false;
+
+    btn.onclick = async () => {
+      await device.gatt.disconnect();
+    };
+
+  } catch (err) {
+    setStatus('Error: ' + err.message, '');
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
